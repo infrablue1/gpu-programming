@@ -1,0 +1,1 @@
+add_executable(print_config print_config.cu)

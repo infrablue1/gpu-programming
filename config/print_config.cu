@@ -1,0 +1,50 @@
+#include "utils.h"
+
+int main(int argc, char const *argv[]) {
+
+    int deviceCount;
+    cudaGetDeviceCount(&deviceCount);
+    std::cout << "Number of CUDA devices: " << deviceCount << "\n\n";
+
+    for (int i = 0; i < deviceCount; ++i) {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+        int clockRateKHz;
+        cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, i);
+
+        std::cout << "Device " << i << ": " << prop.name << "\n";
+        std::cout << "  Compute capability: " << prop.major << "." << prop.minor
+                  << "\n";
+        std::cout << "  Total global memory: " << (prop.totalGlobalMem >> 20)
+                  << " MB\n";
+        std::cout << "  Shared memory per block: " << prop.sharedMemPerBlock
+                  << " bytes\n";
+        std::cout << "  Shared memory per SM: "
+                  << prop.sharedMemPerMultiprocessor << " bytes\n";
+        std::cout << "  Registers per block: " << prop.regsPerBlock << "\n";
+        std::cout << "  Warp size: " << prop.warpSize << "\n";
+        std::cout << "  Max threads per block: " << prop.maxThreadsPerBlock
+                  << "\n";
+        std::cout << "  Max threads per SM: "
+                  << prop.maxThreadsPerMultiProcessor << "\n";
+        std::cout << "  Number of SMs: " << prop.multiProcessorCount << "\n";
+        std::cout << "  Max blocks per SM: " << prop.maxBlocksPerMultiProcessor
+                  << "\n";
+        std::cout << "  Max grid dimensions: [" << prop.maxGridSize[0] << ", "
+                  << prop.maxGridSize[1] << ", " << prop.maxGridSize[2]
+                  << "]\n";
+        std::cout << "  Max threads dim (block): [" << prop.maxThreadsDim[0]
+                  << ", " << prop.maxThreadsDim[1] << ", "
+                  << prop.maxThreadsDim[2] << "]\n";
+        std::cout << "  Clock rate: " << clockRateKHz / 1000 << " MHz\n";
+        std::cout << "  Memory Bus Width: " << prop.memoryBusWidth << " bits\n";
+        std::cout << "  L2 Cache Size: " << prop.l2CacheSize << " bytes\n";
+        std::cout << "  Registers per SM: " << prop.regsPerMultiprocessor
+                  << " registers\n";
+        std::cout << "  Registers per Block: " << prop.regsPerBlock;
+        std::cout << "  Registers per Block: " << prop.warpSize;
+
+        std::cout << std::endl;
+    }
+    return 0;
+}
