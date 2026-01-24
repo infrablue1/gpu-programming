@@ -46,16 +46,16 @@ void doVectorAdd(int numElements) {
     float *d_A = NULL;
     float *d_B = NULL;
     float *d_C = NULL;
-    CUDA_CHECK(cudaMalloc((void **)&d_A, size));
-    CUDA_CHECK(cudaMalloc((void **)&d_B, size));
-    CUDA_CHECK(cudaMalloc((void **)&d_C, size));
+    checkCudaErrors(cudaMalloc((void **)&d_A, size));
+    checkCudaErrors(cudaMalloc((void **)&d_B, size));
+    checkCudaErrors(cudaMalloc((void **)&d_C, size));
 
     // Copy the host input vectors A and B in host memory to the device input
     // vectors in
     // device memory
-    CUDA_CHECK(cudaMemcpy(d_A, h_A.get(), size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_B, h_B.get(), size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_C, h_C.get(), size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_A, h_A.get(), size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_B, h_B.get(), size, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_C, h_C.get(), size, cudaMemcpyHostToDevice));
 
     // Launch the Vector Add CUDA Kernel
     int threadsPerBlock = 256;
@@ -67,14 +67,14 @@ void doVectorAdd(int numElements) {
                                                       numElements);
     }
 
-    CUDA_CHECK(cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     auto t1 = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < kCount; i++) {
         vectorAdd<<<blocksPerGrid, threadsPerBlock>>>(d_A, d_B, d_C,
                                                       numElements);
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     auto t2 = std::chrono::high_resolution_clock::now();
     auto time_elapsed =
@@ -82,14 +82,14 @@ void doVectorAdd(int numElements) {
 
     // Copy the device result vector in device memory to the host result vector
     // in host memory.
-    CUDA_CHECK(cudaMemcpy(h_C.get(), d_C, size, cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(h_C.get(), d_C, size, cudaMemcpyDeviceToHost));
 
     printf(
         "VectorAdd %d elements Kernel average execution time is about %ld us\n",
         numElements, time_elapsed.count() / kCount);
 
     // Free device global memory
-    CUDA_CHECK(cudaFree(d_A));
-    CUDA_CHECK(cudaFree(d_B));
-    CUDA_CHECK(cudaFree(d_C));
+    checkCudaErrors(cudaFree(d_A));
+    checkCudaErrors(cudaFree(d_B));
+    checkCudaErrors(cudaFree(d_C));
 }
