@@ -102,7 +102,7 @@ void callGemm(int blockSize, int M, int N, int K, const std::string pass) {
         cudaMemcpyAsync(dB, hB, memSizeB, cudaMemcpyHostToDevice, stream));
 
     // Setup execution parameters
-    dim3 threads(blockSize, blockSize);
+    dim3 threads(blockSize * blockSize);
     dim3 grid(ceilDiv(M, blockSize), ceilDiv(N, blockSize));
 
     // Method to launch kernel multiple times
@@ -114,6 +114,14 @@ void callGemm(int blockSize, int M, int N, int K, const std::string pass) {
                         M, N, K, kDefaultAlpha, kDefaultBeta, dA, dB, dC);
                 } else {
                     naiveGemmKernel<32><<<grid, threads, 0, stream>>>(
+                        M, N, K, kDefaultAlpha, kDefaultBeta, dA, dB, dC);
+                }
+            } else if (pass == "coalesce") {
+                if (blockSize == 16) {
+                    coalescedGemmKernel<16><<<grid, threads, 0, stream>>>(
+                        M, N, K, kDefaultAlpha, kDefaultBeta, dA, dB, dC);
+                } else {
+                    coalescedGemmKernel<32><<<grid, threads, 0, stream>>>(
                         M, N, K, kDefaultAlpha, kDefaultBeta, dA, dB, dC);
                 }
             } else {
