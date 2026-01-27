@@ -40,7 +40,11 @@ __global__ void sharedMemoryGemmKernel(int M, int N, int K, float alpha,
 
     // Thread index
     const int tx = threadIdx.x / BLOCK_SIZE;
-    const int ty = threadIdx.y % BLOCK_SIZE;
+    const int ty = threadIdx.x % BLOCK_SIZE;
+
+    // Global index
+    const int x = bx * BLOCK_SIZE + tx;
+    const int y = by * BLOCK_SIZE + ty;
 
     // Shared memory
     __shared__ float As[BLOCK_SIZE * BLOCK_SIZE];
@@ -53,8 +57,17 @@ __global__ void sharedMemoryGemmKernel(int M, int N, int K, float alpha,
     float tmp = 0.0;
 
     for (int blockIndex = 0; blockIndex < K; blockIndex += BLOCK_SIZE) {
-        As[tx * BLOCK_SIZE + ty] = A[tx * K + ty];
-        Bs[tx * BLOCK_SIZE + ty] = B[tx * N + ty];
+        if (x < M && (blockIndex + ty) < K) {
+            As[tx * BLOCK_SIZE + ty] = A[tx * K + ty];
+        } else {
+            As[tx * BLOCK_SIZE + ty] = 0.0f;
+        }
+
+        if (y < N && (blockIndex + tx) < K) {
+            Bs[tx * BLOCK_SIZE + ty] = B[tx * N + ty];
+        } else {
+            Bs[tx * BLOCK_SIZE + ty] = 0.0f;
+        }
 
         __syncthreads();
 
@@ -68,6 +81,7 @@ __global__ void sharedMemoryGemmKernel(int M, int N, int K, float alpha,
 
         __syncthreads();
     }
-    printf("tx=%d, ty=%d, tmp=%f\n", tx, ty, tmp);
-    C[tx * N + ty] = alpha * tmp + beta * C[tx * N + ty];
+    if (x < M and y < N) {
+        C[tx * N + ty] = alpha * tmp + beta * C[tx * N + ty];
+    }
 }
