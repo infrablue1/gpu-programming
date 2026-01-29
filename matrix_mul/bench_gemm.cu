@@ -6,6 +6,7 @@ enum GemmPass {
     NAIVE = 0,
     COALESCED,
     SHARED_MEMORY,
+    BLOCKTILING_1D,
 };
 
 void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
@@ -57,6 +58,7 @@ int main(int argc, char const *argv[]) {
         {"naive", GemmPass::NAIVE},
         {"coalesced", GemmPass::COALESCED},
         {"shared_memory", GemmPass::SHARED_MEMORY},
+        {"blocktiling-1d", GemmPass::BLOCKTILING_1D},
     };
 
     auto it = name2value.find(pass);
@@ -76,6 +78,7 @@ void initMatrix(int totalSize, float *matrix) {
     std::uniform_real_distribution<float> dis(-100.0, 100.0);
     for (int i = 0; i < totalSize; i++) {
         matrix[i] = dis(gen);
+        //matrix[i] = 1.0;
     }
 }
 
@@ -118,6 +121,18 @@ void launchSharedMemoryGemm(int M, int N, int K, int blockSize, float *A,
     }
 }
 
+void launchBlockTiling1DGemm(int M, int N, int K, int blockSize, float *A,
+                            float *B, float *C, cudaStream_t stream) {
+   constexpr int BM = 64;
+    constexpr int BN = 64;
+    constexpr int BK = 8;
+    constexpr int TM = 8;
+    dim3 threads((BM * BN) / TM);
+    dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
+    blockTiling1DGemmKernel<BM, BN, BK, TM><<<grid, threads, 0, stream>>>(
+        M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
+}
+
 void launchGemmKernel(int M, int N, int K, int blockSize, float *A, float *B,
                       float *C, cudaStream_t stream, GemmPass pass) {
     switch (pass) {
@@ -129,6 +144,9 @@ void launchGemmKernel(int M, int N, int K, int blockSize, float *A, float *B,
         break;
     case GemmPass::SHARED_MEMORY:
         launchSharedMemoryGemm(M, N, K, blockSize, A, B, C, stream);
+        break;
+    case GemmPass::BLOCKTILING_1D:
+        launchBlockTiling1DGemm(M, N, K, blockSize, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
