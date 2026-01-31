@@ -7,6 +7,7 @@ enum GemmPass {
     COALESCED,
     SHARED_MEMORY,
     BLOCKTILING_1D,
+    BLOCKTILING_2D,
 };
 
 void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
@@ -59,6 +60,7 @@ int main(int argc, char const *argv[]) {
         {"coalesced", GemmPass::COALESCED},
         {"shared_memory", GemmPass::SHARED_MEMORY},
         {"blocktiling-1d", GemmPass::BLOCKTILING_1D},
+        {"blocktiling-2d", GemmPass::BLOCKTILING_2D},
     };
 
     auto it = name2value.find(pass);
@@ -78,7 +80,7 @@ void initMatrix(int totalSize, float *matrix) {
     std::uniform_real_distribution<float> dis(-100.0, 100.0);
     for (int i = 0; i < totalSize; i++) {
         matrix[i] = dis(gen);
-        //matrix[i] = 1.0;
+        // matrix[i] = 1.0;
     }
 }
 
@@ -122,8 +124,8 @@ void launchSharedMemoryGemm(int M, int N, int K, int blockSize, float *A,
 }
 
 void launchBlockTiling1DGemm(int M, int N, int K, int blockSize, float *A,
-                            float *B, float *C, cudaStream_t stream) {
-   constexpr int BM = 64;
+                             float *B, float *C, cudaStream_t stream) {
+    constexpr int BM = 64;
     constexpr int BN = 64;
     constexpr int BK = 8;
     constexpr int TM = 8;
@@ -131,6 +133,31 @@ void launchBlockTiling1DGemm(int M, int N, int K, int blockSize, float *A,
     dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
     blockTiling1DGemmKernel<BM, BN, BK, TM><<<grid, threads, 0, stream>>>(
         M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
+}
+
+void launchBlockTiling2DGemm(int M, int N, int K, int blockSize, float *A,
+                             float *B, float *C, cudaStream_t stream) {
+    constexpr int BM = 64;
+    constexpr int BN = 64;
+    constexpr int BK = 8;
+    constexpr int TM = 8;
+    constexpr int TN = 8;
+
+    const int numBlocksM = ceilDiv(M, BM);
+    const int numBlocksN = ceilDiv(N, BN);
+    const int mainBlocksM = M / BM;
+    const int mainBlocksN = N / BN;
+
+    dim3 threads((BM / TM) * (BN / TN));
+
+    if (mainBlocksM > 0 && mainBlocksN > 0) {
+        dim3 grid(mainBlocksM, mainBlocksN);
+
+        blockTiling2DGemmKernel<BM, BN, BK, TM, TN>
+            <<<grid, threads, 0, stream>>>(M, N, K, kDefaultAlpha, kDefaultBeta,
+                                           A, B, C);
+    }
+    // TODO: add additional kernels for edge elements.
 }
 
 void launchGemmKernel(int M, int N, int K, int blockSize, float *A, float *B,
@@ -147,6 +174,9 @@ void launchGemmKernel(int M, int N, int K, int blockSize, float *A, float *B,
         break;
     case GemmPass::BLOCKTILING_1D:
         launchBlockTiling1DGemm(M, N, K, blockSize, A, B, C, stream);
+        break;
+    case GemmPass::BLOCKTILING_2D:
+        launchBlockTiling2DGemm(M, N, K, blockSize, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
