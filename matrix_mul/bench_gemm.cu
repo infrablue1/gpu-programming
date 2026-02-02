@@ -1,6 +1,12 @@
 #include "argparse/argparse.hpp"
-#include "naive_gemm.cuh"
 #include "utils.h"
+
+#include "blocktiling_1d.cuh"
+#include "blocktiling_2d.cuh"
+#include "global_coalesced.cuh"
+#include "naive.cuh"
+#include "shared_memory.cuh"
+#include "vectorize.cuh"
 
 enum GemmPass {
     NAIVE = 0,
@@ -8,10 +14,10 @@ enum GemmPass {
     SHARED_MEMORY,
     BLOCKTILING_1D,
     BLOCKTILING_2D,
+    VECTORIZE,
 };
 
-void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
-              bool checkResult);
+void callGemm(int M, int N, int K, GemmPass pass, bool checkResult);
 
 int main(int argc, char const *argv[]) {
 
@@ -49,23 +55,22 @@ int main(int argc, char const *argv[]) {
     auto M = program.get<int>("-M");
     auto N = program.get<int>("-N");
     auto K = program.get<int>("-K");
-    int block_size = program.get<int>("--block-size");
     auto pass = program.get<std::string>("--pass");
     auto checkResult = program.get<bool>("--check-result");
-    printf("MatrixA(%d,%d), MatrixB(%d,%d), block_size: %d, pass: %s\n", M, K,
-           K, N, block_size, pass.c_str());
+    printf("MatrixA(%d,%d), MatrixB(%d,%d), pass: %s\n", M, K, K, N,
+           pass.c_str());
 
     static std::unordered_map<std::string, GemmPass> name2value = {
         {"naive", GemmPass::NAIVE},
         {"coalesced", GemmPass::COALESCED},
-        {"shared_memory", GemmPass::SHARED_MEMORY},
+        {"shared-memory", GemmPass::SHARED_MEMORY},
         {"blocktiling-1d", GemmPass::BLOCKTILING_1D},
         {"blocktiling-2d", GemmPass::BLOCKTILING_2D},
-    };
+        {"vectorize", GemmPass::VECTORIZE}};
 
     auto it = name2value.find(pass);
     if (it != name2value.end()) {
-        callGemm(block_size, M, N, K, it->second, checkResult);
+        callGemm(M, N, K, it->second, checkResult);
     } else {
         fprintf(stderr, "Unkown gemm pass %s\n", pass.c_str());
     }
@@ -84,47 +89,35 @@ void initMatrix(int totalSize, float *matrix) {
     }
 }
 
-void launchNaiveGemm(int M, int N, int K, int blockSize, float *A, float *B,
-                     float *C, cudaStream_t stream) {
-    dim3 threads(blockSize * blockSize);
-    dim3 grid(ceilDiv(M, blockSize), ceilDiv(N, blockSize));
-    if (blockSize == 16) {
-        naiveGemmKernel<16><<<grid, threads, 0, stream>>>(
-            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
-    } else {
-        naiveGemmKernel<32><<<grid, threads, 0, stream>>>(
-            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
-    }
+void launchNaiveGemm(int M, int N, int K, float *A, float *B, float *C,
+                     cudaStream_t stream) {
+    dim3 threads(kBlockSize * kBlockSize);
+    dim3 grid(ceilDiv(M, kBlockSize), ceilDiv(N, kBlockSize));
+
+    naiveGemmKernel<kBlockSize><<<grid, threads, 0, stream>>>(
+        M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
 }
 
-void launchCoalescedGemm(int M, int N, int K, int blockSize, float *A, float *B,
-                         float *C, cudaStream_t stream) {
-    dim3 threads(blockSize * blockSize);
-    dim3 grid(ceilDiv(M, blockSize), ceilDiv(N, blockSize));
-    if (blockSize == 16) {
-        coalescedGemmKernel<16><<<grid, threads, 0, stream>>>(
-            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
-    } else {
-        coalescedGemmKernel<32><<<grid, threads, 0, stream>>>(
-            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
-    }
+void launchCoalescedGemm(int M, int N, int K, float *A, float *B, float *C,
+                         cudaStream_t stream) {
+    dim3 threads(kBlockSize * kBlockSize);
+    dim3 grid(ceilDiv(M, kBlockSize), ceilDiv(N, kBlockSize));
+
+    coalescedGemmKernel<kBlockSize><<<grid, threads, 0, stream>>>(
+        M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
 }
 
-void launchSharedMemoryGemm(int M, int N, int K, int blockSize, float *A,
-                            float *B, float *C, cudaStream_t stream) {
-    dim3 threads(blockSize * blockSize);
-    dim3 grid(ceilDiv(M, blockSize), ceilDiv(N, blockSize));
-    if (blockSize == 16) {
-        sharedMemoryGemmKernel<16><<<grid, threads, 0, stream>>>(
-            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
-    } else {
-        sharedMemoryGemmKernel<32><<<grid, threads, 0, stream>>>(
-            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
-    }
+void launchSharedMemoryGemm(int M, int N, int K, float *A, float *B, float *C,
+                            cudaStream_t stream) {
+    dim3 threads(kBlockSize * kBlockSize);
+    dim3 grid(ceilDiv(M, kBlockSize), ceilDiv(N, kBlockSize));
+
+    sharedMemoryGemmKernel<kBlockSize><<<grid, threads, 0, stream>>>(
+        M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
 }
 
-void launchBlockTiling1DGemm(int M, int N, int K, int blockSize, float *A,
-                             float *B, float *C, cudaStream_t stream) {
+void launchBlockTiling1DGemm(int M, int N, int K, float *A, float *B, float *C,
+                             cudaStream_t stream) {
     constexpr int BM = 64;
     constexpr int BN = 64;
     constexpr int BK = 8;
@@ -135,48 +128,82 @@ void launchBlockTiling1DGemm(int M, int N, int K, int blockSize, float *A,
         M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
 }
 
-void launchBlockTiling2DGemm(int M, int N, int K, int blockSize, float *A,
-                             float *B, float *C, cudaStream_t stream) {
-    constexpr int BM = 64;
-    constexpr int BN = 64;
+void launchBlockTiling2DGemm(int M, int N, int K, float *A, float *B, float *C,
+                             cudaStream_t stream) {
     constexpr int BK = 8;
     constexpr int TM = 8;
     constexpr int TN = 8;
 
-    const int numBlocksM = ceilDiv(M, BM);
-    const int numBlocksN = ceilDiv(N, BN);
-    const int mainBlocksM = M / BM;
-    const int mainBlocksN = N / BN;
+    if (M >= 128 && N >= 128) {
+        constexpr int BM = 128;
+        constexpr int BN = 128;
 
-    dim3 threads((BM / TM) * (BN / TN));
+        dim3 threads((BM / TM) * (BN / TN));
+        dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
 
-    if (mainBlocksM > 0 && mainBlocksN > 0) {
-        dim3 grid(mainBlocksM, mainBlocksN);
+        blockTiling2DGemmKernel<BM, BN, BK, TM, TN>
+            <<<grid, threads, 0, stream>>>(M, N, K, kDefaultAlpha, kDefaultBeta,
+                                           A, B, C);
+    } else {
+        constexpr int BM = 64;
+        constexpr int BN = 64;
+
+        dim3 threads((BM / TM) * (BN / TN));
+        dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
 
         blockTiling2DGemmKernel<BM, BN, BK, TM, TN>
             <<<grid, threads, 0, stream>>>(M, N, K, kDefaultAlpha, kDefaultBeta,
                                            A, B, C);
     }
-    // TODO: add additional kernels for edge elements.
 }
 
-void launchGemmKernel(int M, int N, int K, int blockSize, float *A, float *B,
-                      float *C, cudaStream_t stream, GemmPass pass) {
+void launchVectorizeGemm(int M, int N, int K, float *A, float *B, float *C,
+                         cudaStream_t stream) {
+    constexpr int BK = 8;
+    constexpr int TM = 8;
+    constexpr int TN = 8;
+
+    if (M >= 128 && N >= 128) {
+        constexpr int BM = 128;
+        constexpr int BN = 128;
+
+        dim3 threads((BM / TM) * (BN / TN));
+        dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
+
+        vectorizeGemmKernel<BM, BN, BK, TM, TN><<<grid, threads, 0, stream>>>(
+            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
+    } else {
+        constexpr int BM = 64;
+        constexpr int BN = 64;
+
+        dim3 threads((BM / TM) * (BN / TN));
+        dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
+
+        vectorizeGemmKernel<BM, BN, BK, TM, TN><<<grid, threads, 0, stream>>>(
+            M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
+    }
+}
+
+void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
+                      cudaStream_t stream, GemmPass pass) {
     switch (pass) {
     case GemmPass::NAIVE:
-        launchNaiveGemm(M, N, K, blockSize, A, B, C, stream);
+        launchNaiveGemm(M, N, K, A, B, C, stream);
         break;
     case GemmPass::COALESCED:
-        launchCoalescedGemm(M, N, K, blockSize, A, B, C, stream);
+        launchCoalescedGemm(M, N, K, A, B, C, stream);
         break;
     case GemmPass::SHARED_MEMORY:
-        launchSharedMemoryGemm(M, N, K, blockSize, A, B, C, stream);
+        launchSharedMemoryGemm(M, N, K, A, B, C, stream);
         break;
     case GemmPass::BLOCKTILING_1D:
-        launchBlockTiling1DGemm(M, N, K, blockSize, A, B, C, stream);
+        launchBlockTiling1DGemm(M, N, K, A, B, C, stream);
         break;
     case GemmPass::BLOCKTILING_2D:
-        launchBlockTiling2DGemm(M, N, K, blockSize, A, B, C, stream);
+        launchBlockTiling2DGemm(M, N, K, A, B, C, stream);
+        break;
+    case GemmPass::VECTORIZE:
+        launchVectorizeGemm(M, N, K, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
@@ -185,8 +212,7 @@ void launchGemmKernel(int M, int N, int K, int blockSize, float *A, float *B,
     }
 }
 
-void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
-              bool checkResult) {
+void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
     // Allocate host memory for matrix A, B and C
     // A: M x K
     // B: K x N
@@ -232,7 +258,7 @@ void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
 
     // Warm up
     for (int i = 0; i < kWarupIters; i++) {
-        launchGemmKernel(M, N, K, blockSize, dA, dB, dC, stream, pass);
+        launchGemmKernel(M, N, K, dA, dB, dC, stream, pass);
     }
 
     printf("Warmup with %d iterations done!\n", kWarupIters);
@@ -243,7 +269,7 @@ void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
 
     // Launch kernel
     for (int i = 0; i < kBenchIters; i++) {
-        launchGemmKernel(M, N, K, blockSize, dA, dB, dC, stream, pass);
+        launchGemmKernel(M, N, K, dA, dB, dC, stream, pass);
     }
 
     // Record the stop event
@@ -265,12 +291,11 @@ void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
     printf("Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops,"
            " WorkgroupSize= %u threads/block\n",
            gigaFlops, msecPerMatrixMul, flopsPerMatrixMul,
-           blockSize * blockSize);
+           kBlockSize * kBlockSize);
 
     if (checkResult) {
         checkCudaErrors(cudaMemcpy(hC, dC, memSizeC, cudaMemcpyDeviceToHost));
-        printf("Calculate CPU reference result.\n");
-        // std::vector<std::vector<float>> refC(M, std::vector<float>(N));
+
         auto refC = std::make_unique<float[]>(sizeC);
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < N; j++) {
@@ -288,11 +313,12 @@ void callGemm(int blockSize, int M, int N, int K, GemmPass pass,
 
         double eps = 1.0e-2;
         bool correct = true;
+        double dotLength = N;
 
         for (int i = 0; i < M * N; i++) {
             double absErr = fabs(hC[i] - refC[i]);
             double absVal = fabs(hC[i]);
-            double relErr = absErr / absVal;
+            double relErr = absErr / absVal / dotLength;
 
             if (relErr > eps) {
                 printf(
