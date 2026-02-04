@@ -7,6 +7,7 @@
 #include "naive.cuh"
 #include "shared_memory.cuh"
 #include "vectorize.cuh"
+#include "warptiling.cuh"
 
 enum GemmPass {
     NAIVE = 0,
@@ -15,6 +16,7 @@ enum GemmPass {
     BLOCKTILING_1D,
     BLOCKTILING_2D,
     VECTORIZE,
+    WARPTILING,
 };
 
 void callGemm(int M, int N, int K, GemmPass pass, bool checkResult);
@@ -66,7 +68,9 @@ int main(int argc, char const *argv[]) {
         {"shared-memory", GemmPass::SHARED_MEMORY},
         {"blocktiling-1d", GemmPass::BLOCKTILING_1D},
         {"blocktiling-2d", GemmPass::BLOCKTILING_2D},
-        {"vectorize", GemmPass::VECTORIZE}};
+        {"vectorize", GemmPass::VECTORIZE},
+        {"warptiling", GemmPass::WARPTILING},
+    };
 
     auto it = name2value.find(pass);
     if (it != name2value.end()) {
@@ -184,6 +188,27 @@ void launchVectorizeGemm(int M, int N, int K, float *A, float *B, float *C,
     }
 }
 
+void launchWarpTilingGemm(int M, int N, int K, float *A, float *B, float *C,
+                          cudaStream_t stream) {
+
+    constexpr int NUM_THREADS = 128;
+    constexpr int BM = 128;
+    constexpr int BN = 128;
+    constexpr int BK = 16;
+    constexpr int WN = 64;
+    constexpr int WM = 64;
+    constexpr int WNITER = 4;
+    constexpr int TM = 8;
+    constexpr int TN = 4;
+
+    dim3 threads(NUM_THREADS);
+    dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
+
+    warpTilingGemmKernel<BM, BN, BK, WM, WN, WNITER, TM, TN, NUM_THREADS>
+        <<<grid, threads, 0, stream>>>(M, N, K, kDefaultAlpha, kDefaultBeta, A,
+                                       B, C);
+}
+
 void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
                       cudaStream_t stream, GemmPass pass) {
     switch (pass) {
@@ -204,6 +229,9 @@ void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
         break;
     case GemmPass::VECTORIZE:
         launchVectorizeGemm(M, N, K, A, B, C, stream);
+        break;
+    case GemmPass::WARPTILING:
+        launchWarpTilingGemm(M, N, K, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
@@ -257,11 +285,11 @@ void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
         cudaMemcpyAsync(dB, hB, memSizeB, cudaMemcpyHostToDevice, stream));
 
     // Warm up
-    for (int i = 0; i < kWarupIters; i++) {
+    for (int i = 0; i < kWarmupIters; i++) {
         launchGemmKernel(M, N, K, dA, dB, dC, stream, pass);
     }
 
-    printf("Warmup with %d iterations done!\n", kWarupIters);
+    printf("Warmup with %d iterations done!\n", kWarmupIters);
     checkCudaErrors(cudaStreamSynchronize(stream));
 
     // Record the start event

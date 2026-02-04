@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdio>
 #include <chrono>
 #include <memory>
@@ -8,7 +10,7 @@
 #include <cuda_runtime.h>
 #include <cuda.h>
 
-constexpr int kWarupIters = 1;
+constexpr int kWarmupIters = 1;
 constexpr int kBenchIters = 10;
 constexpr float kDefaultAlpha = 1.0;
 constexpr float kDefaultBeta = 0.0;
@@ -16,6 +18,7 @@ constexpr int kM = 4096;
 constexpr int kN = 4096;
 constexpr int kK = 4096;
 constexpr int kBlockSize = 32;
+constexpr int kWarpSize = 32;
 
 
 // This function is called by the checkCudaErrors macro
