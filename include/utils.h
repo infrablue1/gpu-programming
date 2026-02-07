@@ -19,6 +19,9 @@ constexpr int kN = 4096;
 constexpr int kK = 4096;
 constexpr int kBlockSize = 32;
 constexpr int kWarpSize = 32;
+constexpr int kWMMA_M = 16;
+constexpr int kWMMA_N = 16;
+constexpr int kWMMA_K = 8; // tf32 is 8 and bf16/fp16 is 16
 
 
 // This function is called by the checkCudaErrors macro

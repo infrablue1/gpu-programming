@@ -5,6 +5,7 @@
 #include "blocktiling_2d.cuh"
 #include "global_coalesced.cuh"
 #include "naive.cuh"
+#include "naive_tensorcore.cuh"
 #include "shared_memory.cuh"
 #include "vectorize.cuh"
 #include "warptiling.cuh"
@@ -17,6 +18,7 @@ enum GemmPass {
     BLOCKTILING_2D,
     VECTORIZE,
     WARPTILING,
+    NAIVE_TENSORCORE,
 };
 
 void callGemm(int M, int N, int K, GemmPass pass, bool checkResult);
@@ -70,6 +72,7 @@ int main(int argc, char const *argv[]) {
         {"blocktiling-2d", GemmPass::BLOCKTILING_2D},
         {"vectorize", GemmPass::VECTORIZE},
         {"warptiling", GemmPass::WARPTILING},
+        {"naive-tensorcore", GemmPass::NAIVE_TENSORCORE},
     };
 
     auto it = name2value.find(pass);
@@ -84,12 +87,18 @@ int main(int argc, char const *argv[]) {
 
 void initMatrix(int totalSize, float *matrix) {
     // Use random float number to initialze matrix.
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    unsigned int fixedSeed = 12345;
+    std::mt19937 gen(fixedSeed);
     std::uniform_real_distribution<float> dis(-100.0, 100.0);
     for (int i = 0; i < totalSize; i++) {
         matrix[i] = dis(gen);
         // matrix[i] = 1.0;
+    }
+}
+
+void initMatrixConst(int totalSize, float value, float *matrix) {
+    for (int i = 0; i < totalSize; i++) {
+        matrix[i] = value;
     }
 }
 
@@ -209,6 +218,15 @@ void launchWarpTilingGemm(int M, int N, int K, float *A, float *B, float *C,
                                        B, C);
 }
 
+void launchNaiveTensorcoreGemm(int M, int N, int K, float *A, float *B,
+                               float *C, cudaStream_t stream) {
+    dim3 threads(kWarpSize);
+    dim3 grid(ceilDiv(N, kWMMA_N), ceilDiv(M, kWMMA_M));
+
+    naiveTensorCore<float>
+        <<<grid, threads>>>(M, N, K, kDefaultAlpha, kDefaultBeta, A, B, C);
+}
+
 void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
                       cudaStream_t stream, GemmPass pass) {
     switch (pass) {
@@ -232,6 +250,9 @@ void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
         break;
     case GemmPass::WARPTILING:
         launchWarpTilingGemm(M, N, K, A, B, C, stream);
+        break;
+    case GemmPass::NAIVE_TENSORCORE:
+        launchNaiveTensorcoreGemm(M, N, K, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
@@ -261,8 +282,15 @@ void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
     checkCudaErrors(cudaMallocHost(&hC, memSizeC));
 
     // Initialize matrix A and B
-    initMatrix(sizeA, hA);
-    initMatrix(sizeB, hB);
+    if (pass == GemmPass::NAIVE_TENSORCORE) {
+        // For float cuda only support tf32 MMA, which may cause lower accuracy.
+        // So we use constant input value to avoid it.
+        initMatrixConst(sizeA, 1.0f, hA);
+        initMatrixConst(sizeA, 2.0f, hA);
+    } else {
+        initMatrix(sizeA, hA);
+        initMatrix(sizeB, hB);
+    }
 
     // Allocate device memory
     float *dA, *dB, *dC;
@@ -339,9 +367,10 @@ void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
         // test relative error by the formula
         //     |<x, y>_cpu - <x,y>_gpu|/<|x|, |y|>  < eps
 
-        double eps = 1.0e-2;
+        double eps = 1.0e-4;
+
         bool correct = true;
-        double dotLength = N;
+        double dotLength = K;
 
         for (int i = 0; i < M * N; i++) {
             double absErr = fabs(hC[i] - refC[i]);

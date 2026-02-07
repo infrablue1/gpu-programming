@@ -9,3 +9,4 @@ For gemm shape M=N=K=4096:
 |blocktiling-1d|3517.76|39.07|
 |blocktiling-2d|7405.25|18.56|
 |vectorize|7837.50|17.53|
+|warptiling|10678.90|12.87|
