@@ -3,6 +3,7 @@
 
 #include "blocktiling_1d.cuh"
 #include "blocktiling_2d.cuh"
+#include "double_buffer.cuh"
 #include "global_coalesced.cuh"
 #include "naive.cuh"
 #include "naive_tensorcore.cuh"
@@ -18,6 +19,7 @@ enum GemmPass {
     BLOCKTILING_2D,
     VECTORIZE,
     WARPTILING,
+    DOUBLE_BUFFER,
     NAIVE_TENSORCORE,
 };
 
@@ -72,6 +74,7 @@ int main(int argc, char const *argv[]) {
         {"blocktiling-2d", GemmPass::BLOCKTILING_2D},
         {"vectorize", GemmPass::VECTORIZE},
         {"warptiling", GemmPass::WARPTILING},
+        {"double-buffer", GemmPass::DOUBLE_BUFFER},
         {"naive-tensorcore", GemmPass::NAIVE_TENSORCORE},
     };
 
@@ -218,6 +221,27 @@ void launchWarpTilingGemm(int M, int N, int K, float *A, float *B, float *C,
                                        B, C);
 }
 
+void launchDoubleBufferGemm(int M, int N, int K, float *A, float *B, float *C,
+                            cudaStream_t stream) {
+
+    constexpr int NUM_THREADS = 256;
+    constexpr int BM = 128;
+    constexpr int BN = 256;
+    constexpr int BK = 16;
+    constexpr int WN = 32;
+    constexpr int WM = 128;
+    constexpr int WNITER = 1;
+    constexpr int TM = 8;
+    constexpr int TN = 8;
+
+    dim3 threads(NUM_THREADS);
+    dim3 grid(ceilDiv(M, BM), ceilDiv(N, BN));
+
+    doubleBufferingGemm<BM, BN, BK, WM, WN, WNITER, TM, TN, NUM_THREADS>
+        <<<grid, threads, 0, stream>>>(M, N, K, kDefaultAlpha, kDefaultBeta, A,
+                                       B, C);
+}
+
 void launchNaiveTensorcoreGemm(int M, int N, int K, float *A, float *B,
                                float *C, cudaStream_t stream) {
     dim3 threads(kWarpSize);
@@ -251,8 +275,10 @@ void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
     case GemmPass::WARPTILING:
         launchWarpTilingGemm(M, N, K, A, B, C, stream);
         break;
-    case GemmPass::NAIVE_TENSORCORE:
+    case GemmPass::DOUBLE_BUFFER:
         launchNaiveTensorcoreGemm(M, N, K, A, B, C, stream);
+    case GemmPass::NAIVE_TENSORCORE:
+        launchDoubleBufferGemm(M, N, K, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
@@ -344,10 +370,8 @@ void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
     double gigaFlops =
         (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
 
-    printf("Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops,"
-           " WorkgroupSize= %u threads/block\n",
-           gigaFlops, msecPerMatrixMul, flopsPerMatrixMul,
-           kBlockSize * kBlockSize);
+    printf("Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops\n",
+           gigaFlops, msecPerMatrixMul, flopsPerMatrixMul);
 
     if (checkResult) {
         checkCudaErrors(cudaMemcpy(hC, dC, memSizeC, cudaMemcpyDeviceToHost));
@@ -363,7 +387,6 @@ void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
             }
         }
 
-        printf("Compare cpu result and cuda result.\n");
         // test relative error by the formula
         //     |<x, y>_cpu - <x,y>_gpu|/<|x|, |y|>  < eps
 
