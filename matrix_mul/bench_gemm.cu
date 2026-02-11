@@ -276,9 +276,10 @@ void launchGemmKernel(int M, int N, int K, float *A, float *B, float *C,
         launchWarpTilingGemm(M, N, K, A, B, C, stream);
         break;
     case GemmPass::DOUBLE_BUFFER:
-        launchNaiveTensorcoreGemm(M, N, K, A, B, C, stream);
-    case GemmPass::NAIVE_TENSORCORE:
         launchDoubleBufferGemm(M, N, K, A, B, C, stream);
+        break;
+    case GemmPass::NAIVE_TENSORCORE:
+        launchNaiveTensorcoreGemm(M, N, K, A, B, C, stream);
         break;
     default:
         fprintf(stderr, "Unkown gemm pass %d\n", pass);
@@ -312,7 +313,7 @@ void callGemm(int M, int N, int K, GemmPass pass, bool checkResult) {
         // For float cuda only support tf32 MMA, which may cause lower accuracy.
         // So we use constant input value to avoid it.
         initMatrixConst(sizeA, 1.0f, hA);
-        initMatrixConst(sizeA, 2.0f, hA);
+        initMatrixConst(sizeA, 2.0f, hB);
     } else {
         initMatrix(sizeA, hA);
         initMatrix(sizeB, hB);
